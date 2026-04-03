@@ -12,16 +12,12 @@ app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 USER_CHAT_ID = int(os.environ.get("USER_CHAT_ID", "5578314612"))
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not set")
-
 bot = telebot.TeleBot(BOT_TOKEN)
 
-seen_tokens = set()
-profile_cache = {}
 SEEN_FILE = "seen_tokens.json"
+seen_tokens = set()
 
-# ---------------- LOAD/SAVE ----------------
+# ---------------- LOAD ----------------
 
 def load_seen():
     global seen_tokens
@@ -33,124 +29,184 @@ def load_seen():
             seen_tokens = set()
 
 def save_seen():
-    try:
-        with open(SEEN_FILE, "w") as f:
-            json.dump(list(seen_tokens), f)
-    except:
-        pass
+    with open(SEEN_FILE, "w") as f:
+        json.dump(list(seen_tokens), f)
 
 # ---------------- DISCORD ----------------
 
-def extract_discord(links):
-    if not links:
+def extract_discord(text):
+    if not text:
         return None
-    for link in links:
-        url = (link.get("url") or "").lower()
-        if "discord.gg" in url or "discord.com/invite" in url:
-            return link.get("url")
+
+    text = str(text).lower()
+
+    if "discord.gg" in text or "discord.com/invite" in text:
+        words = text.split()
+        for w in words:
+            if "discord" in w:
+                return w
     return None
 
-# ---------------- PROFILE CACHE ----------------
+# ---------------- BIRDEYE (SOLANA 🔥) ----------------
 
-def load_profiles():
-    global profile_cache
+def scan_birdeye():
+    print("Scanning Birdeye...")
     try:
-        r = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=15)
-        if r.status_code == 200:
-            for p in r.json():
-                profile_cache[p.get("tokenAddress")] = p
-    except:
-        pass
+        url = "https://public-api.birdeye.so/defi/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=0&limit=50"
 
-def get_discord_from_profile(addr):
-    p = profile_cache.get(addr)
-    if not p:
-        return None
-    return extract_discord(p.get("links", []))
+        headers = {
+            "accept": "application/json",
+            "x-chain": "solana"
+        }
 
-# ---------------- SCAN ----------------
+        r = requests.get(url, headers=headers, timeout=15)
 
-def scan():
-    chains = [
-        "solana","ethereum","bsc","base",
-        "arbitrum","polygon","avalanche","optimism","fantom"
-    ]
+        if r.status_code != 200:
+            return
 
-    sent = 0
+        tokens = r.json().get("data", {}).get("tokens", [])
+
+        for t in tokens:
+            addr = t.get("address")
+
+            if not addr or addr in seen_tokens:
+                continue
+
+            desc = str(t)
+
+            discord = extract_discord(desc)
+            if not discord:
+                continue
+
+            seen_tokens.add(addr)
+            save_seen()
+
+            name = t.get("symbol", "SOL TOKEN")
+
+            msg = (
+                f"🔥 SOLANA TOKEN (BIRDEYE)\n\n"
+                f"{name}\n\n"
+                f"🔗 {discord}\n"
+                f"https://birdeye.so/token/{addr}"
+            )
+
+            bot.send_message(USER_CHAT_ID, msg)
+            print("Sent Birdeye:", name)
+
+    except Exception as e:
+        print("Birdeye error:", e)
+
+# ---------------- RAYDIUM ----------------
+
+def scan_raydium():
+    print("Scanning Raydium...")
+    try:
+        url = "https://api.raydium.io/v2/main/pairs"
+
+        r = requests.get(url, timeout=15)
+
+        if r.status_code != 200:
+            return
+
+        pairs = r.json()[:50]
+
+        for p in pairs:
+            addr = p.get("baseMint")
+
+            if not addr or addr in seen_tokens:
+                continue
+
+            desc = str(p)
+
+            discord = extract_discord(desc)
+            if not discord:
+                continue
+
+            seen_tokens.add(addr)
+            save_seen()
+
+            name = p.get("name", "Raydium Token")
+
+            msg = (
+                f"⚡ RAYDIUM NEW PAIR\n\n"
+                f"{name}\n\n"
+                f"🔗 {discord}\n"
+                f"https://raydium.io/swap/?inputCurrency=sol&outputCurrency={addr}"
+            )
+
+            bot.send_message(USER_CHAT_ID, msg)
+            print("Sent Raydium:", name)
+
+    except Exception as e:
+        print("Raydium error:", e)
+
+# ---------------- DEXSCREENER ----------------
+
+def scan_dex():
+    print("Scanning Dex...")
+    chains = ["solana", "ethereum", "bsc", "base"]
 
     for chain in chains:
         try:
             url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}"
-            r = requests.get(url, timeout=20)
+            r = requests.get(url, timeout=15)
 
             if r.status_code != 200:
                 continue
 
-            pairs = r.json().get("pairs", [])[:100]
+            pairs = r.json().get("pairs", [])[:50]
 
             for pair in pairs:
-                try:
-                    base = pair.get("baseToken", {})
-                    addr = base.get("address")
+                base = pair.get("baseToken", {})
+                addr = base.get("address")
 
-                    if not addr or addr in seen_tokens:
-                        continue
+                if not addr or addr in seen_tokens:
+                    continue
 
-                    liq = pair.get("liquidity", {}).get("usd", 0)
-                    vol = pair.get("volume", {}).get("h24", 0)
+                desc = str(pair)
 
-                    if liq < 1000:
-                        continue
+                discord = extract_discord(desc)
+                if not discord:
+                    continue
 
-                    discord = extract_discord(pair.get("info", {}).get("socials", []))
-                    if not discord:
-                        discord = get_discord_from_profile(addr)
+                seen_tokens.add(addr)
+                save_seen()
 
-                    if not discord:
-                        continue
+                name = base.get("symbol", "TOKEN")
 
-                    seen_tokens.add(addr)
-                    save_seen()
+                msg = (
+                    f"🚀 DEX COIN\n\n"
+                    f"{name} ({chain})\n\n"
+                    f"🔗 {discord}\n"
+                    f"{pair.get('url')}"
+                )
 
-                    name = base.get("name", "Unknown")
-                    symbol = base.get("symbol", "?")
-                    chart = pair.get("url")
-
-                    msg = (
-                        f"🚀 Coin with Discord\n\n"
-                        f"{name} ({symbol})\n"
-                        f"Chain: {chain.upper()}\n\n"
-                        f"💧 Liquidity: ${liq:,.0f}\n"
-                        f"📊 Volume: ${vol:,.0f}\n\n"
-                        f"🔗 {discord}\n"
-                        f"📈 {chart}"
-                    )
-
-                    bot.send_message(USER_CHAT_ID, msg)
-                    print("Sent:", name)
-                    sent += 1
-
-                except Exception as e:
-                    print("Pair error:", e)
+                bot.send_message(USER_CHAT_ID, msg)
+                print("Sent Dex:", name)
 
         except Exception as e:
-            print("Chain error:", e)
+            print("Dex error:", e)
 
-    print("Done. Sent:", sent)
+# ---------------- MAIN SCAN ----------------
+
+def scan_all():
+    scan_birdeye()
+    scan_raydium()
+    scan_dex()
 
 # ---------------- START ----------------
 
 def start():
-    load_profiles()
+    bot.send_message(USER_CHAT_ID, "✅ Bot started (Multi-source scanning)")
 
-    bot.send_message(USER_CHAT_ID, "✅ Bot started and scanning...")
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(scan_all, "interval", minutes=3)
+    scheduler.start()
 
-    sched = BackgroundScheduler()
-    sched.add_job(scan, "interval", minutes=5)
-    sched.start()
-
-    for i in range(2):
-        scan()
+    # FORCE FIRST RESULTS
+    for i in range(3):
+        print(f"Initial scan {i+1}")
+        scan_all()
         time.sleep(5)
 
 # ---------------- ROUTES ----------------
@@ -161,7 +217,7 @@ def home():
 
 @app.route("/test")
 def test():
-    bot.send_message(USER_CHAT_ID, "🔥 Test OK")
+    bot.send_message(USER_CHAT_ID, "🔥 Test message working")
     return "sent"
 
 # ---------------- MAIN ----------------
