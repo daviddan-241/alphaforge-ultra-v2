@@ -9,19 +9,19 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("8710292892:AAHGhAR_2xdkXba2wNclnyl5wOK_OjE38I4")
 USER_CHAT_ID = int(os.environ.get("USER_CHAT_ID", "5578314612"))
-SEEN_FILE = "seen_tokens.json"
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN is required")
+    raise ValueError("BOT_TOKEN not set")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 seen_tokens = set()
 profile_cache = {}
+SEEN_FILE = "seen_tokens.json"
 
-# ------------------ STORAGE ------------------
+# ---------------- LOAD/SAVE ----------------
 
 def load_seen():
     global seen_tokens
@@ -39,7 +39,7 @@ def save_seen():
     except:
         pass
 
-# ------------------ DISCORD EXTRACTION ------------------
+# ---------------- DISCORD ----------------
 
 def extract_discord(links):
     if not links:
@@ -50,42 +50,30 @@ def extract_discord(links):
             return link.get("url")
     return None
 
-# ------------------ PROFILE FALLBACK ------------------
+# ---------------- PROFILE CACHE ----------------
 
 def load_profiles():
     global profile_cache
     try:
-        resp = requests.get(
-            "https://api.dexscreener.com/token-profiles/latest/v1",
-            timeout=15
-        )
-        if resp.status_code == 200:
-            for p in resp.json():
+        r = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=15)
+        if r.status_code == 200:
+            for p in r.json():
                 profile_cache[p.get("tokenAddress")] = p
     except:
         pass
 
-def get_discord_from_profile(token_addr):
-    profile = profile_cache.get(token_addr)
-    if not profile:
+def get_discord_from_profile(addr):
+    p = profile_cache.get(addr)
+    if not p:
         return None
-    return extract_discord(profile.get("links", []))
+    return extract_discord(p.get("links", []))
 
-# ------------------ SCANNER ------------------
+# ---------------- SCAN ----------------
 
-def scan_coins():
-    global seen_tokens
-
+def scan():
     chains = [
-        "solana",
-        "ethereum",
-        "bsc",
-        "base",
-        "arbitrum",
-        "polygon",
-        "avalanche",
-        "optimism",
-        "fantom"
+        "solana","ethereum","bsc","base",
+        "arbitrum","polygon","avalanche","optimism","fantom"
     ]
 
     sent = 0
@@ -93,64 +81,53 @@ def scan_coins():
     for chain in chains:
         try:
             url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}"
-            resp = requests.get(url, timeout=20)
+            r = requests.get(url, timeout=20)
 
-            if resp.status_code != 200:
+            if r.status_code != 200:
                 continue
 
-            pairs = resp.json().get("pairs", [])[:120]
+            pairs = r.json().get("pairs", [])[:100]
 
             for pair in pairs:
                 try:
                     base = pair.get("baseToken", {})
-                    token_addr = base.get("address")
+                    addr = base.get("address")
 
-                    if not token_addr or token_addr in seen_tokens:
+                    if not addr or addr in seen_tokens:
                         continue
 
-                    liquidity = pair.get("liquidity", {}).get("usd", 0)
-                    volume = pair.get("volume", {}).get("h24", 0)
-                    price_change = pair.get("priceChange", {}).get("h24", 0)
+                    liq = pair.get("liquidity", {}).get("usd", 0)
+                    vol = pair.get("volume", {}).get("h24", 0)
 
-                    # FILTER REAL COINS
-                    if liquidity < 5000 or volume < 1000:
+                    if liq < 1000:
                         continue
 
-                    if price_change < -60:
-                        continue
-
-                    # DISCORD CHECK
-                    discord = extract_discord(
-                        pair.get("info", {}).get("socials", [])
-                    )
-
+                    discord = extract_discord(pair.get("info", {}).get("socials", []))
                     if not discord:
-                        discord = get_discord_from_profile(token_addr)
+                        discord = get_discord_from_profile(addr)
 
                     if not discord:
                         continue
 
-                    seen_tokens.add(token_addr)
+                    seen_tokens.add(addr)
                     save_seen()
 
                     name = base.get("name", "Unknown")
-                    symbol = base.get("symbol", "???")
-                    dex_url = pair.get("url")
+                    symbol = base.get("symbol", "?")
+                    chart = pair.get("url")
 
-                    message = (
-                        f"🚀 New ACTIVE Coin with Discord\n\n"
-                        f"Name: {name}\n"
-                        f"Symbol: {symbol}\n"
+                    msg = (
+                        f"🚀 Coin with Discord\n\n"
+                        f"{name} ({symbol})\n"
                         f"Chain: {chain.upper()}\n\n"
-                        f"💧 Liquidity: ${liquidity:,.0f}\n"
-                        f"📊 Volume (24h): ${volume:,.0f}\n\n"
-                        f"🔗 Discord: {discord}\n"
-                        f"📈 Chart: {dex_url}\n\n"
-                        f"⚡ Filtered Alpha"
+                        f"💧 Liquidity: ${liq:,.0f}\n"
+                        f"📊 Volume: ${vol:,.0f}\n\n"
+                        f"🔗 {discord}\n"
+                        f"📈 {chart}"
                     )
 
-                    bot.send_message(USER_CHAT_ID, message)
-                    print(f"✅ Sent {name} ({chain})")
+                    bot.send_message(USER_CHAT_ID, msg)
+                    print("Sent:", name)
                     sent += 1
 
                 except Exception as e:
@@ -159,38 +136,39 @@ def scan_coins():
         except Exception as e:
             print("Chain error:", e)
 
-    print(f"Scan complete — sent {sent} coins")
+    print("Done. Sent:", sent)
 
-# ------------------ SCHEDULER ------------------
+# ---------------- START ----------------
 
-def start_scheduler():
+def start():
     load_profiles()
 
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(scan_coins, "interval", minutes=5)
-    scheduler.start()
+    bot.send_message(USER_CHAT_ID, "✅ Bot started and scanning...")
 
-    print("🚀 Bot started — scanning every 5 minutes")
+    sched = BackgroundScheduler()
+    sched.add_job(scan, "interval", minutes=5)
+    sched.start()
 
-    # Initial boost scan
-    for i in range(3):
-        print(f"Initial scan round {i+1}")
-        scan_coins()
-        time.sleep(10)
+    for i in range(2):
+        scan()
+        time.sleep(5)
 
-# ------------------ WEB SERVER ------------------
+# ---------------- ROUTES ----------------
 
 @app.route("/")
 def home():
-    return "✅ Coin Discord Scanner Running"
+    return "OK", 200
 
-# ------------------ MAIN ------------------
+@app.route("/test")
+def test():
+    bot.send_message(USER_CHAT_ID, "🔥 Test OK")
+    return "sent"
+
+# ---------------- MAIN ----------------
 
 if __name__ == "__main__":
     load_seen()
+    threading.Thread(target=start, daemon=True).start()
 
-    thread = threading.Thread(target=start_scheduler)
-    thread.start()
-
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
