@@ -2,9 +2,14 @@ import express from "express";
 import multer from "multer";
 import unzipper from "unzipper";
 import fetch from "node-fetch";
+import fs from "fs";
 
 const app = express();
 const upload = multer({ dest: "uploads/" });
+
+app.get("/", (req, res) => {
+  res.send("AlphaForge Backend Running 🚀");
+});
 
 app.post("/upload", upload.single("zip"), async (req, res) => {
   try {
@@ -32,11 +37,14 @@ app.post("/upload", upload.single("zip"), async (req, res) => {
       }
     }
 
-    res.json({ message: "✅ Upload complete to GitHub!" });
+    res.json({ message: "✅ Upload complete to GitHub" });
 
   } catch (err) {
-    res.json({ message: "❌ Error uploading files" });
+    console.error(err);
+    res.json({ message: "❌ Upload failed" });
   }
 });
 
-app.listen(3000, () => console.log("Server running on 3000"));
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Server running");
+});
