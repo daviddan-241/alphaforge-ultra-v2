@@ -32,7 +32,7 @@ def load_seen():
             seen_tokens = set()
     else:
         seen_tokens = set()
-        print("No seen file yet - first run will send all current Discord coins")
+        print("First run - will send many coins with Discord from recent pairs")
 
 def save_seen():
     try:
@@ -41,70 +41,127 @@ def save_seen():
     except Exception as e:
         print(f"Error saving seen file: {e}")
 
-def scan_coins():
-    """Scan latest DexScreener token profiles for Discord links only."""
+def get_discord_from_profile(token_addr):
+    """Fetch profile and extract Discord link if present."""
+    try:
+        resp = requests.get(f"https://api.dexscreener.com/token-profiles/latest/v1", timeout=10)
+        if resp.status_code != 200:
+            return None
+        profiles = resp.json()
+        for p in profiles:
+            if p.get("tokenAddress") == token_addr:
+                for link in p.get("links", []):
+                    link_type = (link.get("type") or "").lower()
+                    link_url = (link.get("url") or "").lower()
+                    if link_type == "discord" or "discord.gg" in link_url or "discord.com/invite" in link_url:
+                        return link.get("url")
+        return None
+    except:
+        return None
+
+def scan_coins(initial=False):
     global seen_tokens
     try:
-        resp = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=15)
-        resp.raise_for_status()
-        profiles = resp.json()
+        # 1. Get recent new pairs (much higher volume than profiles only)
+        chains = ["solana", "base", "ethereum", "bsc"]  # Add more if wanted
+        sent_count = 0
 
-        new_sent = 0
-        for profile in profiles:
-            token_addr = profile.get("tokenAddress")
-            if not token_addr or token_addr in seen_tokens:
+        for chain in chains:
+            # New pairs endpoint gives recently created trading pairs
+            url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}"
+            resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
                 continue
+            data = resp.json()
+            pairs = data.get("pairs", [])[:100]  # Limit to avoid too many calls
 
-            discord_link = None
-            for link in profile.get("links", []):
-                link_type = (link.get("type") or "").lower()
-                link_url = (link.get("url") or "").lower()
-                if link_type == "discord" or "discord.gg" in link_url or "discord.com/invite" in link_url:
-                    discord_link = link.get("url")
-                    break
+            for pair in pairs:
+                token_addr = pair.get("baseToken", {}).get("address") or pair.get("quoteToken", {}).get("address")
+                if not token_addr or token_addr in seen_tokens:
+                    continue
 
-            if discord_link:
+                # Check for Discord via profile
+                discord_link = get_discord_from_profile(token_addr)
+                if not discord_link:
+                    continue  # Only send if Discord exists
+
                 seen_tokens.add(token_addr)
-                save_seen()  # persist immediately
-                chain = profile.get("chainId", "solana")
-                dex_url = profile.get("url") or f"https://dexscreener.com/{chain}/{token_addr}"
-                desc = (profile.get("description") or "No description")[:300]
+                save_seen()
+
+                name = pair.get("baseToken", {}).get("name") or "Unknown"
+                dex_url = pair.get("url") or f"https://dexscreener.com/{chain}/{pair.get('pairAddress')}"
+                desc = pair.get("baseToken", {}).get("symbol") or "No description"
 
                 message = (
-                    f"New Coin with Discord (recent profile)\n\n"
+                    f"🪙 New Coin with Discord (from recent pairs)\n\n"
+                    f"Name: {name}\n"
                     f"Token Address: {token_addr}\n"
                     f"Discord: {discord_link}\n"
                     f"DexScreener: {dex_url}\n"
-                    f"Description: {desc}\n\n"
-                    f"Only coins with Discord links. Scans every 5 min."
+                    f"Chain: {chain.upper()}\n\n"
+                    f"Only Discord links • Scans every 5 min"
                 )
                 bot.send_message(USER_CHAT_ID, message)
-                print(f"Sent Discord for {token_addr}")
-                new_sent += 1
+                print(f"✅ Sent: {token_addr} ({name}) on {chain}")
+                sent_count += 1
 
-        if new_sent == 0:
-            print("No new Discord coins in this scan")
+        # Also run a quick profile scan for extra coverage
+        try:
+            resp = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=10)
+            if resp.status_code == 200:
+                for profile in resp.json():
+                    token_addr = profile.get("tokenAddress")
+                    if not token_addr or token_addr in seen_tokens:
+                        continue
+                    discord_link = None
+                    for link in profile.get("links", []):
+                        link_type = (link.get("type") or "").lower()
+                        link_url = (link.get("url") or "").lower()
+                        if link_type == "discord" or "discord.gg" in link_url or "discord.com/invite" in link_url:
+                            discord_link = link.get("url")
+                            break
+                    if discord_link:
+                        seen_tokens.add(token_addr)
+                        save_seen()
+                        # Similar message construction...
+                        name = profile.get("name") or "Unknown"
+                        dex_url = profile.get("url") or f"https://dexscreener.com/solana/{token_addr}"
+                        message = f"🪙 New Coin with Discord\nName: {name}\nToken: {token_addr}\nDiscord: {discord_link}\nDexScreener: {dex_url}\n\nOnly Discord"
+                        bot.send_message(USER_CHAT_ID, message)
+                        print(f"✅ Sent profile coin: {token_addr}")
+                        sent_count += 1
+        except:
+            pass
+
+        if sent_count > 0:
+            print(f"Sent {sent_count} new Discord coin(s) this scan")
         else:
-            print(f"Sent {new_sent} new Discord coin(s)")
+            print("No new Discord coins found in this scan cycle")
 
     except Exception as e:
         print(f"Scan error: {e}")
 
 @app.route('/')
 def home():
-    return "✅ Coin Discord Scanner Bot is RUNNING on Render! (scanning every 5 min)"
+    return "✅ Enhanced Coin Discord Scanner is RUNNING! (new pairs + profiles for more coins)"
 
 def start_scheduler():
     scheduler = BackgroundScheduler()
-    scheduler.add_job(scan_coins, 'interval', minutes=5, id='discord_scan')
+    scheduler.add_job(scan_coins, 'interval', minutes=5, id='discord_scan', args=[False])
     scheduler.start()
-    print("🕒 Scheduler started – scanning every 5 minutes")
-    # First run immediately (this sends the "everything from last ~2 weeks" batch)
-    time.sleep(3)
-    scan_coins()
+    print("🕒 Scheduler started – scanning new pairs every 5 minutes")
+
+    # Heavy initial scan on startup for maximum coins (≈ recent 2 weeks activity)
+    print("Starting big initial scan for many coins...")
+    for i in range(6):   # Multiple rounds to catch more
+        print(f"Initial round {i+1}/6")
+        scan_coins(initial=True)
+        time.sleep(10)   # Give API time to return fresh data
+
+    print("Initial batch done. Now normal scanning.")
 
 if __name__ == "__main__":
-    load_seen()                    # load previously seen coins
+    load_seen()
     thread = threading.Thread(target=start_scheduler, daemon=True)
     thread.start()
 
