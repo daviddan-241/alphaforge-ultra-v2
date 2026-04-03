@@ -9,7 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-BOT_TOKEN = os.environ.get("8710292892:AAHGhAR_2xdkXba2wNclnyl5wOK_OjE38I4")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 USER_CHAT_ID = int(os.environ.get("USER_CHAT_ID", "5578314612"))
 
 if not BOT_TOKEN:
