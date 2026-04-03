@@ -1,20 +1,3 @@
-**Here is your complete, ready-to-deploy Telegram bot code.**
-
-It does exactly what you asked for:
-- Scans **recent coins** (latest token profiles from DexScreener API – the best free public source for new Solana meme coins with social links).
-- Checks only for **Discord links** (ignores Telegram, Twitter, websites, etc.).
-- Sends **only** the Discord link + coin info to your Telegram DM (chat ID `5578314612`).
-- Runs automatically every 5 minutes.
-- Tracks seen coins (in memory) so it doesn't spam duplicates.
-- No interaction needed with the bot itself ("remove the dm it’s sent to the bot" – it only sends outbound, no polling for incoming messages).
-- Uses the **exact bot token** you gave (put it in environment variables – never commit it to GitHub).
-
-### 1. GitHub Repo Structure (copy-paste this)
-
-Create a new GitHub repo and add these files:
-
-**`main.py`** (the bot code):
-```python
 import os
 import threading
 import time
@@ -25,8 +8,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-# === CONFIG FROM RENDER ENVIRONMENT VARIABLES ===
-BOT_TOKEN = os.environ.get('BOT_TOKEN')  # Your token: 8710292892:AAHGhAR_2xdkXba2wNclnyl5wOK_OjE38I4
+# CONFIG FROM RENDER ENVIRONMENT VARIABLES
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
 USER_CHAT_ID = int(os.environ.get('USER_CHAT_ID', 5578314612))
 
 if not BOT_TOKEN:
@@ -39,7 +22,7 @@ def scan_coins():
     """Scan latest DexScreener token profiles for Discord links only."""
     global seen_tokens
     try:
-        # Free public DexScreener API - latest profiled coins (most have socials)
+        # Free public DexScreener API - latest token profiles
         resp = requests.get("https://api.dexscreener.com/token-profiles/latest/v1", timeout=15)
         resp.raise_for_status()
         profiles = resp.json()
@@ -58,36 +41,36 @@ def scan_coins():
                     break
 
             if discord_link:
-                seen_tokens.add(token_addr)  # Mark as sent
+                seen_tokens.add(token_addr)
                 chain = profile.get("chainId", "solana")
                 dex_url = profile.get("url") or f"https://dexscreener.com/{chain}/{token_addr}"
                 desc = (profile.get("description") or "No description")[:300]
 
                 message = (
-                    f"🚀 **New Coin with Discord** (recent profile)\n\n"
-                    f"**Token Address:** `{token_addr}`\n"
-                    f"**Discord:** {discord_link}\n"
-                    f"**DexScreener:** {dex_url}\n"
-                    f"**Description:** {desc}\n\n"
-                    f"Only coins with Discord links are sent. Scans every 5 min."
+                    f"New Coin with Discord (recent profile)\n\n"
+                    f"Token Address: {token_addr}\n"
+                    f"Discord: {discord_link}\n"
+                    f"DexScreener: {dex_url}\n"
+                    f"Description: {desc}\n\n"
+                    f"Only coins with Discord links. Scans every 5 min."
                 )
                 bot.send_message(USER_CHAT_ID, message)
-                print(f"✅ Sent Discord for {token_addr}")
+                print(f"Sent Discord for {token_addr}")
 
     except Exception as e:
-        print(f"❌ Scan error: {e}")
+        print(f"Scan error: {e}")
 
 @app.route('/')
 def home():
-    return "✅ Coin Discord Scanner Bot is RUNNING on Render!<br>Scanning every 5 minutes for new coins with Discord links only."
+    return "Coin Discord Scanner Bot is RUNNING on Render! Scanning every 5 minutes for new coins with Discord links only."
 
 def start_scheduler():
     scheduler = BackgroundScheduler()
     scheduler.add_job(scan_coins, 'interval', minutes=5, id='discord_scan')
     scheduler.start()
-    print("🕒 Scheduler started – scanning for coins with Discord every 5 minutes")
+    print("Scheduler started - scanning for coins with Discord every 5 minutes")
     # Run once immediately on startup
-    time.sleep(5)  # Give Flask a moment
+    time.sleep(5)
     scan_coins()
 
 if __name__ == "__main__":
@@ -95,6 +78,6 @@ if __name__ == "__main__":
     thread = threading.Thread(target=start_scheduler, daemon=True)
     thread.start()
 
-    # Render requires a web server on $PORT
+    # Render requires a web server
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
