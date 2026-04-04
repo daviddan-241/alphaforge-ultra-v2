@@ -1,204 +1,192 @@
-import os
-import time
-import json
 import requests
-from flask import Flask
-import telebot
-from apscheduler.schedulers.background import BackgroundScheduler
+import time
+import re
 
-app = Flask(__name__)
+# ================= CONFIG =================
+TELEGRAM_BOT_TOKEN = "8710292892:AAHGhAR_2xdkXba2wNclnyl5wOK_OjE38I4"
+CHAT_ID = "5578314612"
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-USER_CHAT_ID = int(os.environ.get("USER_CHAT_ID", "5578314612"))
+BIRDEYE_API_KEY = "YOUR_BIRDEYE_API_KEY"
 
-if not BOT_TOKEN:
-    raise Exception("BOT_TOKEN missing")
+MIN_VOLUME = 2000
+MAX_AGE_DAYS = 14
 
-bot = telebot.TeleBot(BOT_TOKEN)
+SEEN_DISCORDS = set()
+SEEN_WEBSITES = set()
+SEEN_TOKENS = set()
 
-SEEN_FILE = "seen.json"
-seen = set()
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
 
-# ---------------- LOAD SEEN ----------------
-
-if os.path.exists(SEEN_FILE):
+# ================= TELEGRAM =================
+def send(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
-        with open(SEEN_FILE, "r") as f:
-            seen = set(json.load(f))
-    except:
-        seen = set()
-
-def save_seen():
-    try:
-        with open(SEEN_FILE, "w") as f:
-            json.dump(list(seen), f)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except:
         pass
 
-# ---------------- DISCORD EXTRACT ----------------
-
+# ================= DISCORD EXTRACT =================
 def extract_discord(text):
-    if not text:
-        return None
+    return re.findall(r"https:\/\/discord\.gg\/[a-zA-Z0-9]+", text)
 
-    text = str(text).lower()
-
-    for word in text.split():
-        if "discord.gg" in word or "discord.com/invite" in word:
-            return word.strip()
-
-    return None
-
-# ---------------- SEND SAFE ----------------
-
-def send(msg):
+# ================= WEBSITE SCRAPER =================
+def scrape_site(url):
     try:
-        bot.send_message(USER_CHAT_ID, msg)
-    except Exception as e:
-        print("Send error:", e)
+        html = requests.get(url, headers=HEADERS, timeout=10).text
+        return extract_discord(html)
+    except:
+        return []
 
-# ---------------- DEX SCAN ----------------
-
+# ================= DEXSCREENER =================
 def scan_dex():
-    found = 0
     try:
-        url = "https://api.dexscreener.com/latest/dex/pairs/solana"
-        r = requests.get(url, timeout=15)
+        url = "https://api.dexscreener.com/latest/dex/pairs"
+        pairs = requests.get(url).json().get("pairs", [])
 
-        if r.status_code != 200:
-            print("Dex failed")
-            return 0
+        results = []
 
-        pairs = r.json().get("pairs", [])[:80]
+        for pair in pairs:
+            base = pair.get("baseToken", {})
+            name = base.get("name", "Unknown")
+            symbol = base.get("symbol", "")
 
-        for p in pairs:
-            addr = p.get("baseToken", {}).get("address")
+            created = pair.get("pairCreatedAt", 0)
+            volume = pair.get("volume", {}).get("h24", 0)
 
-            if not addr or addr in seen:
+            if volume < MIN_VOLUME:
                 continue
 
-            discord = extract_discord(p)
-
-            if not discord:
+            websites = pair.get("info", {}).get("websites", [])
+            if not websites:
                 continue
 
-            seen.add(addr)
-            save_seen()
+            website = websites[0].get("url")
 
-            name = p.get("baseToken", {}).get("symbol", "TOKEN")
+            if not website or website in SEEN_WEBSITES:
+                continue
 
-            msg = f"🚀 {name} (SOL)\n\n🔗 {discord}"
+            SEEN_WEBSITES.add(website)
 
-            send(msg)
-            print("DEX SENT:", name)
-            found += 1
+            results.append(("DEX", name, symbol, website))
 
-    except Exception as e:
-        print("Dex error:", e)
+        return results
+    except:
+        return []
 
-    return found
-
-# ---------------- BIRDEYE SCAN ----------------
-
+# ================= BIRDEYE =================
 def scan_birdeye():
-    found = 0
     try:
-        url = "https://public-api.birdeye.so/defi/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=0&limit=50"
-        headers = {"x-chain": "solana"}
+        url = "https://public-api.birdeye.so/defi/tokenlist?sort_by=created_time&sort_type=desc"
+        headers = {
+            "X-API-KEY": BIRDEYE_API_KEY
+        }
 
-        r = requests.get(url, headers=headers, timeout=15)
+        data = requests.get(url, headers=headers).json()
+        tokens = data.get("data", {}).get("tokens", [])
 
-        if r.status_code != 200:
-            print("Birdeye failed")
-            return 0
+        results = []
 
-        tokens = r.json().get("data", {}).get("tokens", [])
+        for token in tokens[:50]:
+            name = token.get("name")
+            symbol = token.get("symbol")
+            website = token.get("website")
 
-        for t in tokens:
-            addr = t.get("address")
-
-            if not addr or addr in seen:
+            if not website:
                 continue
 
-            discord = extract_discord(t)
-
-            if not discord:
+            if website in SEEN_WEBSITES:
                 continue
 
-            seen.add(addr)
-            save_seen()
+            SEEN_WEBSITES.add(website)
 
-            name = t.get("symbol", "SOL")
+            results.append(("BIRDEYE", name, symbol, website))
 
-            msg = f"🔥 {name} (Birdeye)\n\n🔗 {discord}"
+        return results
+    except:
+        return []
 
-            send(msg)
-            print("BIRDEYE SENT:", name)
-            found += 1
+# ================= RAYDIUM (fallback via Dex) =================
+def scan_raydium():
+    # Raydium pairs are already inside Dexscreener (Solana)
+    return scan_dex()
 
-    except Exception as e:
-        print("Birdeye error:", e)
+# ================= TWITTER (NITTER) =================
+def scan_twitter():
+    keywords = ["memecoin launch", "new token", "crypto gem"]
 
-    return found
+    results = []
 
-# ---------------- FALLBACK ----------------
+    for kw in keywords:
+        try:
+            url = f"https://nitter.net/search?f=tweets&q={kw.replace(' ', '%20')}"
+            html = requests.get(url, headers=HEADERS).text
 
-fallback_links = [
-    "https://discord.gg/web3",
-    "https://discord.gg/crypto",
-    "https://discord.gg/nft",
-]
+            tweets = re.findall(r'tweet-content.*?>(.*?)</div>', html, re.DOTALL)
 
-def fallback():
-    link = fallback_links[int(time.time()) % len(fallback_links)]
-    send(f"⚠️ No fresh Discord found\n\n🔗 {link}")
+            for tweet in tweets:
+                links = extract_discord(tweet)
 
-# ---------------- MAIN SCAN ----------------
+                for link in links:
+                    if link not in SEEN_DISCORDS:
+                        results.append(("X", "Unknown", "", None, link))
+        except:
+            continue
 
-def scan_all():
-    print("🔍 SCAN STARTED")
+    return results
 
-    total = 0
+# ================= PROCESS =================
+def process_results(source, name, symbol, website):
+    discord_links = scrape_site(website)
 
-    total += scan_dex()
-    total += scan_birdeye()
+    for link in discord_links:
+        if link in SEEN_DISCORDS:
+            continue
 
-    if total == 0:
-        print("No results → fallback")
-        fallback()
-    else:
-        print(f"Total sent: {total}")
+        SEEN_DISCORDS.add(link)
 
-# ---------------- SCHEDULER ----------------
+        msg = f"""🚀 {source} COIN
 
-scheduler = BackgroundScheduler()
+{name} ({symbol})
+🌐 {website}
+💬 {link}
+"""
+        send(msg)
+        print("Sent:", link)
 
-def start():
-    print("🚀 BOT STARTED")
+# ================= MAIN =================
+def run():
+    print("🔥 ELITE SCANNER RUNNING (DEX + BIRDEYE + X + WEB)")
 
-    send("✅ Bot is LIVE")
+    while True:
+        try:
+            # ---- DEX ----
+            for src, name, symbol, website in scan_dex():
+                process_results(src, name, symbol, website)
 
-    scheduler.add_job(scan_all, "interval", minutes=2)
-    scheduler.start()
+            # ---- BIRDEYE ----
+            for src, name, symbol, website in scan_birdeye():
+                process_results(src, name, symbol, website)
 
-    # First run immediately
-    scan_all()
+            # ---- TWITTER ----
+            twitter_links = scan_twitter()
+            for src, name, symbol, website, link in twitter_links:
+                if link not in SEEN_DISCORDS:
+                    SEEN_DISCORDS.add(link)
 
-# ---------------- ROUTES ----------------
+                    msg = f"""🔥 X SIGNAL
 
-@app.route("/")
-def home():
-    return "OK", 200
+💬 {link}
+"""
+                    send(msg)
+                    print("X:", link)
 
-@app.route("/test")
-def test():
-    send("🔥 TEST OK")
-    return "sent"
+        except Exception as e:
+            print("Error:", e)
 
-# ---------------- START ----------------
+        time.sleep(60)
 
-start()
-
+# ================= START =================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    run()
