@@ -1,6 +1,8 @@
 import requests
 import time
 import re
+import threading
+from flask import Flask
 
 # ================= CONFIG =================
 TELEGRAM_BOT_TOKEN = "8710292892:AAHGhAR_2xdkXba2wNclnyl5wOK_OjE38I4"
@@ -9,12 +11,30 @@ CHAT_ID = "5578314612"
 MIN_VOLUME = 2000
 MAX_AGE_DAYS = 5
 
+# 👉 REPLACE WITH YOUR RENDER URL
+BASE_URL = "https://alphaforge-ultra-v2-nngd.onrender.com"
+
 SEEN_DISCORDS = set()
 SEEN_TOKENS = set()
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0"
-}
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+app = Flask(__name__)
+
+# ================= WEB SERVER =================
+@app.route("/")
+def home():
+    return "Bot is alive 🚀"
+
+# ================= KEEP ALIVE =================
+def keep_alive():
+    while True:
+        try:
+            requests.get(BASE_URL)
+            print("🔄 Self ping sent")
+        except:
+            print("❌ Ping failed")
+        time.sleep(600)  # every 10 minutes
 
 # ================= TELEGRAM =================
 def send(msg):
@@ -24,11 +44,10 @@ def send(msg):
     except:
         pass
 
-# ================= DISCORD EXTRACT =================
+# ================= DISCORD =================
 def extract_discord(text):
     return re.findall(r"https:\/\/discord\.gg\/[a-zA-Z0-9]+", text)
 
-# ================= WEBSITE SCRAPER =================
 def scrape_site(url):
     try:
         html = requests.get(url, headers=HEADERS, timeout=10).text
@@ -36,24 +55,20 @@ def scrape_site(url):
     except:
         return []
 
-# ================= DEX (ALL CHAINS) =================
+# ================= DEX =================
 def scan_dex():
     results = []
     try:
         url = "https://api.dexscreener.com/latest/dex/pairs"
-        pairs = requests.get(url, timeout=10).json().get("pairs", [])
+        pairs = requests.get(url).json().get("pairs", [])
 
         now = int(time.time() * 1000)
-        max_age_ms = MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+        max_age = MAX_AGE_DAYS * 86400000
 
         for pair in pairs:
             created = pair.get("pairCreatedAt", 0)
-            if created == 0:
+            if created == 0 or (now - created) > max_age:
                 continue
-
-            age = now - created
-            if age > max_age_ms:
-                continue  # ❌ older than 5 days
 
             volume = pair.get("volume", {}).get("h24", 0)
             if volume < MIN_VOLUME:
@@ -71,37 +86,30 @@ def scan_dex():
             if not website:
                 continue
 
-            token_id = website
-            if token_id in SEEN_TOKENS:
+            if website in SEEN_TOKENS:
                 continue
 
-            SEEN_TOKENS.add(token_id)
-
+            SEEN_TOKENS.add(website)
             results.append((name, symbol, website))
-
     except:
         pass
 
     return results
 
-# ================= PUMP.FUN =================
+# ================= PUMPFUN =================
 def scan_pumpfun():
     results = []
     try:
         url = "https://frontend-api.pump.fun/coins"
-        coins = requests.get(url, timeout=10).json()
+        coins = requests.get(url).json()
 
         now = int(time.time() * 1000)
-        max_age_ms = MAX_AGE_DAYS * 86400000
+        max_age = MAX_AGE_DAYS * 86400000
 
         for coin in coins[:50]:
             created = coin.get("created_timestamp", 0)
-            if created == 0:
+            if created == 0 or (now - created) > max_age:
                 continue
-
-            age = now - created
-            if age > max_age_ms:
-                continue  # ❌ older than 5 days
 
             name = coin.get("name")
             symbol = coin.get("symbol")
@@ -110,28 +118,25 @@ def scan_pumpfun():
             if not website:
                 continue
 
-            token_id = website
-            if token_id in SEEN_TOKENS:
+            if website in SEEN_TOKENS:
                 continue
 
-            SEEN_TOKENS.add(token_id)
-
+            SEEN_TOKENS.add(website)
             results.append((name, symbol, website))
-
     except:
         pass
 
     return results
 
-# ================= X SCAN =================
+# ================= X =================
 def scan_x():
     results = []
-    keywords = ["pumpfun", "memecoin launch", "new token"]
+    keywords = ["memecoin launch", "pumpfun", "new token"]
 
     for kw in keywords:
         try:
             url = f"https://nitter.net/search?f=tweets&q={kw.replace(' ', '%20')}"
-            html = requests.get(url, headers=HEADERS, timeout=10).text
+            html = requests.get(url, headers=HEADERS).text
 
             tweets = re.findall(r'tweet-content.*?>(.*?)</div>', html, re.DOTALL)
 
@@ -141,63 +146,33 @@ def scan_x():
                 for link in links:
                     if link not in SEEN_DISCORDS:
                         results.append(link)
-
         except:
             continue
 
     return results
 
-# ================= PROCESS =================
-def process_coin(source, name, symbol, website):
-    try:
-        discord_links = scrape_site(website)
-
-        if not discord_links:
-            return  # ❌ STRICT: must have Discord
-
-        for link in discord_links:
-            if link in SEEN_DISCORDS:
-                continue
-
-            SEEN_DISCORDS.add(link)
-
-            msg = f"""🚀 {source} (≤5 DAYS)
-
-{name} ({symbol})
-🌐 {website}
-💬 {link}
-"""
-            send(msg)
-            print("Sent:", link)
-
-    except:
-        pass
-
-# ================= MAIN =================
-def run():
-    print("🔥 5-DAY DISCORD SCANNER RUNNING")
+# ================= BOT LOOP =================
+def bot_loop():
+    print("🔥 Bot running (Keep Alive Mode)")
 
     while True:
         try:
-            # ---- DEX ----
             for name, symbol, website in scan_dex():
-                process_coin("DEX", name, symbol, website)
+                for link in scrape_site(website):
+                    if link not in SEEN_DISCORDS:
+                        SEEN_DISCORDS.add(link)
+                        send(f"🚀 DEX\n{name} ({symbol})\n🌐 {website}\n💬 {link}")
 
-            # ---- PUMPFUN ----
             for name, symbol, website in scan_pumpfun():
-                process_coin("PUMPFUN", name, symbol, website)
+                for link in scrape_site(website):
+                    if link not in SEEN_DISCORDS:
+                        SEEN_DISCORDS.add(link)
+                        send(f"🚀 PUMPFUN\n{name} ({symbol})\n🌐 {website}\n💬 {link}")
 
-            # ---- X ----
             for link in scan_x():
                 if link not in SEEN_DISCORDS:
                     SEEN_DISCORDS.add(link)
-
-                    msg = f"""🔥 X SIGNAL (FRESH)
-
-💬 {link}
-"""
-                    send(msg)
-                    print("X:", link)
+                    send(f"🔥 X SIGNAL\n💬 {link}")
 
         except Exception as e:
             print("Error:", e)
@@ -206,4 +181,9 @@ def run():
 
 # ================= START =================
 if __name__ == "__main__":
-    run()
+    threading.Thread(target=bot_loop).start()
+    threading.Thread(target=keep_alive).start()
+
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
