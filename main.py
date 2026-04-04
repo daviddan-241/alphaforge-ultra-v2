@@ -6,13 +6,10 @@ import re
 TELEGRAM_BOT_TOKEN = "8710292892:AAHGhAR_2xdkXba2wNclnyl5wOK_OjE38I4"
 CHAT_ID = "5578314612"
 
-BIRDEYE_API_KEY = "YOUR_BIRDEYE_API_KEY"
-
 MIN_VOLUME = 2000
-MAX_AGE_DAYS = 14
+MAX_AGE_DAYS = 5
 
 SEEN_DISCORDS = set()
-SEEN_WEBSITES = set()
 SEEN_TOKENS = set()
 
 HEADERS = {
@@ -39,89 +36,102 @@ def scrape_site(url):
     except:
         return []
 
-# ================= DEXSCREENER =================
+# ================= DEX (ALL CHAINS) =================
 def scan_dex():
+    results = []
     try:
         url = "https://api.dexscreener.com/latest/dex/pairs"
-        pairs = requests.get(url).json().get("pairs", [])
+        pairs = requests.get(url, timeout=10).json().get("pairs", [])
 
-        results = []
+        now = int(time.time() * 1000)
+        max_age_ms = MAX_AGE_DAYS * 24 * 60 * 60 * 1000
 
         for pair in pairs:
+            created = pair.get("pairCreatedAt", 0)
+            if created == 0:
+                continue
+
+            age = now - created
+            if age > max_age_ms:
+                continue  # ❌ older than 5 days
+
+            volume = pair.get("volume", {}).get("h24", 0)
+            if volume < MIN_VOLUME:
+                continue
+
             base = pair.get("baseToken", {})
             name = base.get("name", "Unknown")
             symbol = base.get("symbol", "")
-
-            created = pair.get("pairCreatedAt", 0)
-            volume = pair.get("volume", {}).get("h24", 0)
-
-            if volume < MIN_VOLUME:
-                continue
 
             websites = pair.get("info", {}).get("websites", [])
             if not websites:
                 continue
 
             website = websites[0].get("url")
-
-            if not website or website in SEEN_WEBSITES:
+            if not website:
                 continue
 
-            SEEN_WEBSITES.add(website)
+            token_id = website
+            if token_id in SEEN_TOKENS:
+                continue
 
-            results.append(("DEX", name, symbol, website))
+            SEEN_TOKENS.add(token_id)
 
-        return results
+            results.append((name, symbol, website))
+
     except:
-        return []
+        pass
 
-# ================= BIRDEYE =================
-def scan_birdeye():
+    return results
+
+# ================= PUMP.FUN =================
+def scan_pumpfun():
+    results = []
     try:
-        url = "https://public-api.birdeye.so/defi/tokenlist?sort_by=created_time&sort_type=desc"
-        headers = {
-            "X-API-KEY": BIRDEYE_API_KEY
-        }
+        url = "https://frontend-api.pump.fun/coins"
+        coins = requests.get(url, timeout=10).json()
 
-        data = requests.get(url, headers=headers).json()
-        tokens = data.get("data", {}).get("tokens", [])
+        now = int(time.time() * 1000)
+        max_age_ms = MAX_AGE_DAYS * 86400000
 
-        results = []
+        for coin in coins[:50]:
+            created = coin.get("created_timestamp", 0)
+            if created == 0:
+                continue
 
-        for token in tokens[:50]:
-            name = token.get("name")
-            symbol = token.get("symbol")
-            website = token.get("website")
+            age = now - created
+            if age > max_age_ms:
+                continue  # ❌ older than 5 days
+
+            name = coin.get("name")
+            symbol = coin.get("symbol")
+            website = coin.get("website")
 
             if not website:
                 continue
 
-            if website in SEEN_WEBSITES:
+            token_id = website
+            if token_id in SEEN_TOKENS:
                 continue
 
-            SEEN_WEBSITES.add(website)
+            SEEN_TOKENS.add(token_id)
 
-            results.append(("BIRDEYE", name, symbol, website))
+            results.append((name, symbol, website))
 
-        return results
     except:
-        return []
+        pass
 
-# ================= RAYDIUM (fallback via Dex) =================
-def scan_raydium():
-    # Raydium pairs are already inside Dexscreener (Solana)
-    return scan_dex()
+    return results
 
-# ================= TWITTER (NITTER) =================
-def scan_twitter():
-    keywords = ["memecoin launch", "new token", "crypto gem"]
-
+# ================= X SCAN =================
+def scan_x():
     results = []
+    keywords = ["pumpfun", "memecoin launch", "new token"]
 
     for kw in keywords:
         try:
             url = f"https://nitter.net/search?f=tweets&q={kw.replace(' ', '%20')}"
-            html = requests.get(url, headers=HEADERS).text
+            html = requests.get(url, headers=HEADERS, timeout=10).text
 
             tweets = re.findall(r'tweet-content.*?>(.*?)</div>', html, re.DOTALL)
 
@@ -130,52 +140,59 @@ def scan_twitter():
 
                 for link in links:
                     if link not in SEEN_DISCORDS:
-                        results.append(("X", "Unknown", "", None, link))
+                        results.append(link)
+
         except:
             continue
 
     return results
 
 # ================= PROCESS =================
-def process_results(source, name, symbol, website):
-    discord_links = scrape_site(website)
+def process_coin(source, name, symbol, website):
+    try:
+        discord_links = scrape_site(website)
 
-    for link in discord_links:
-        if link in SEEN_DISCORDS:
-            continue
+        if not discord_links:
+            return  # ❌ STRICT: must have Discord
 
-        SEEN_DISCORDS.add(link)
+        for link in discord_links:
+            if link in SEEN_DISCORDS:
+                continue
 
-        msg = f"""🚀 {source} COIN
+            SEEN_DISCORDS.add(link)
+
+            msg = f"""🚀 {source} (≤5 DAYS)
 
 {name} ({symbol})
 🌐 {website}
 💬 {link}
 """
-        send(msg)
-        print("Sent:", link)
+            send(msg)
+            print("Sent:", link)
+
+    except:
+        pass
 
 # ================= MAIN =================
 def run():
-    print("🔥 ELITE SCANNER RUNNING (DEX + BIRDEYE + X + WEB)")
+    print("🔥 5-DAY DISCORD SCANNER RUNNING")
 
     while True:
         try:
             # ---- DEX ----
-            for src, name, symbol, website in scan_dex():
-                process_results(src, name, symbol, website)
+            for name, symbol, website in scan_dex():
+                process_coin("DEX", name, symbol, website)
 
-            # ---- BIRDEYE ----
-            for src, name, symbol, website in scan_birdeye():
-                process_results(src, name, symbol, website)
+            # ---- PUMPFUN ----
+            for name, symbol, website in scan_pumpfun():
+                process_coin("PUMPFUN", name, symbol, website)
 
-            # ---- TWITTER ----
-            twitter_links = scan_twitter()
-            for src, name, symbol, website, link in twitter_links:
+            # ---- X ----
+            for link in scan_x():
                 if link not in SEEN_DISCORDS:
                     SEEN_DISCORDS.add(link)
 
-                    msg = f"""🔥 X SIGNAL
+                    msg = f"""🔥 X SIGNAL (FRESH)
 
 💬 {link}
 """
